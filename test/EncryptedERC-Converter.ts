@@ -5,13 +5,18 @@ import type {
 	CalldataWithdrawCircuitGroth16,
 	RegistrationCircuit,
 } from "../generated-types/zkit";
-import { processPoseidonEncryption } from "../src";
+import {
+	decryptMetadata,
+	encryptMetadata,
+	processPoseidonEncryption,
+} from "../src";
 import {
 	type FeeERC20,
 	FeeERC20__factory,
 	type SimpleERC20,
 	SimpleERC20__factory,
 } from "../typechain-types";
+import { erc20 } from "../typechain-types/@openzeppelin/contracts/token";
 import type {
 	BurnProofStruct,
 	EncryptedERC,
@@ -210,10 +215,14 @@ describe("EncryptedERC - Converter", () => {
 		describe("Auditor Key Set", () => {
 			it("should revert if user try to call private burn without auditor key", async () => {
 				await expect(
-					encryptedERC.connect(users[0].signer).privateBurn(
-						mockBurnProof as BurnProofStruct,
-						Array.from({ length: 7 }, () => 1n),
-					),
+					encryptedERC
+						.connect(users[0].signer)
+						[
+							"privateBurn(((uint256[2],uint256[2][2],uint256[2]),uint256[19]),uint256[7])"
+						](
+							mockBurnProof as BurnProofStruct,
+							Array.from({ length: 7 }, () => 1n),
+						),
 				).to.be.reverted;
 			});
 
@@ -221,10 +230,9 @@ describe("EncryptedERC - Converter", () => {
 				await expect(
 					encryptedERC
 						.connect(users[0].signer)
-						.privateMint(
-							users[0].signer.address,
-							mockMintProof as MintProofStruct,
-						),
+						[
+							"privateMint(address,((uint256[2],uint256[2][2],uint256[2]),uint256[24]))"
+						](users[0].signer.address, mockMintProof as MintProofStruct),
 				).to.be.reverted;
 			});
 
@@ -242,10 +250,14 @@ describe("EncryptedERC - Converter", () => {
 			// this both should be here since we need to set auditor key first
 			it("should revert if user try to call private burn in converter mode", async () => {
 				await expect(
-					encryptedERC.connect(users[0].signer).privateBurn(
-						mockBurnProof as BurnProofStruct,
-						Array.from({ length: 7 }, () => 1n),
-					),
+					encryptedERC
+						.connect(users[0].signer)
+						[
+							"privateBurn(((uint256[2],uint256[2][2],uint256[2]),uint256[19]),uint256[7])"
+						](
+							mockBurnProof as BurnProofStruct,
+							Array.from({ length: 7 }, () => 1n),
+						),
 				).to.be.revertedWithCustomError(encryptedERC, "InvalidOperation");
 			});
 
@@ -253,10 +265,9 @@ describe("EncryptedERC - Converter", () => {
 				await expect(
 					encryptedERC
 						.connect(users[0].signer)
-						.privateMint(
-							users[0].signer.address,
-							mockMintProof as MintProofStruct,
-						),
+						[
+							"privateMint(address,((uint256[2],uint256[2][2],uint256[2]),uint256[24]))"
+						](users[0].signer.address, mockMintProof as MintProofStruct),
 				).to.be.revertedWithCustomError(encryptedERC, "InvalidOperation");
 			});
 		});
@@ -349,11 +360,11 @@ describe("EncryptedERC - Converter", () => {
 
 					await encryptedERC
 						.connect(owner)
-						.deposit(testCase.convertedAmount, erc20.target, [
-							...ciphertext,
-							...authKey,
-							nonce,
-						]);
+						["deposit(uint256,address,uint256[7])"](
+							testCase.convertedAmount,
+							erc20.target,
+							[...ciphertext, ...authKey, nonce],
+						);
 
 					const erc20BalanceAfter = await erc20.balanceOf(owner.address);
 					expect(erc20BalanceAfter).to.equal(
@@ -379,6 +390,61 @@ describe("EncryptedERC - Converter", () => {
 				}
 			});
 
+			it("should deposit tokens to EncryptedERC with encrypted metadata", async () => {
+				const MESSAGE = "DEPOSIT transaction metadata testing.";
+				const sender = users[0];
+				const messageFor = users[1];
+				const c = {
+					convertedAmount: 1_005_000_000_000_000_000_000n,
+					dust: 0n,
+					encryptedValue: 10_050_000_000_000n,
+				};
+				const erc20 = erc20s[1];
+
+				await erc20
+					.connect(owner)
+					.approve(encryptedERC.target, c.convertedAmount);
+
+				const { ciphertext, nonce, authKey } = processPoseidonEncryption(
+					[c.encryptedValue],
+					sender.publicKey,
+				);
+
+				const encryptedMetadata = encryptMetadata(
+					messageFor.publicKey,
+					MESSAGE,
+				);
+
+				const tx = await encryptedERC
+					.connect(owner)
+					["deposit(uint256,address,uint256[7],bytes)"](
+						c.convertedAmount,
+						erc20.target,
+						[...ciphertext, ...authKey, nonce],
+						encryptedMetadata,
+					);
+				await tx.wait();
+
+				// receiver should be able to decrypt the metadata
+				const events = await encryptedERC.queryFilter(
+					encryptedERC.filters.PrivateMessage,
+					tx.blockNumber || 0,
+					tx.blockNumber || 0,
+				);
+
+				const emittedMetadata = events[0].args.metadata;
+				expect(emittedMetadata).to.not.be.equal("0x");
+				const messageType = emittedMetadata.messageType;
+				expect(messageType).to.equal("DEPOSIT");
+
+				const encryptedMsgBytes = emittedMetadata.encryptedMsg;
+				const decryptedMetadata = decryptMetadata(
+					messageFor.privateKey,
+					encryptedMsgBytes || "",
+				);
+				expect(decryptedMetadata).to.equal(MESSAGE);
+			});
+
 			it("should revert if amount approved is different from the amount deposited", async () => {
 				const ownerUser = users[0];
 				const depositAmount = 1_000_000_000n;
@@ -400,11 +466,11 @@ describe("EncryptedERC - Converter", () => {
 				await expect(
 					encryptedERC
 						.connect(owner)
-						.deposit(depositAmount, feeERC20.target, [
-							...ciphertext,
-							...authKey,
-							nonce,
-						]),
+						["deposit(uint256,address,uint256[7])"](
+							depositAmount,
+							feeERC20.target,
+							[...ciphertext, ...authKey, nonce],
+						),
 				).to.be.revertedWithCustomError(encryptedERC, "TransferFailed");
 			});
 
@@ -416,21 +482,25 @@ describe("EncryptedERC - Converter", () => {
 
 			it("should revert if user is not registered", async () => {
 				await expect(
-					encryptedERC.connect(users[5].signer).deposit(
-						1n,
-						users[0].signer.address,
-						Array.from({ length: 7 }, () => 1n),
-					),
+					encryptedERC
+						.connect(users[5].signer)
+						["deposit(uint256,address,uint256[7])"](
+							1n,
+							users[0].signer.address,
+							Array.from({ length: 7 }, () => 1n),
+						),
 				).to.be.reverted;
 			});
 
 			it("should revert if the token is blacklisted", async () => {
 				await expect(
-					encryptedERC.connect(users[0].signer).deposit(
-						1n,
-						blacklistedERC20.target,
-						Array.from({ length: 7 }, () => 1n),
-					),
+					encryptedERC
+						.connect(users[0].signer)
+						["deposit(uint256,address,uint256[7])"](
+							1n,
+							blacklistedERC20.target,
+							Array.from({ length: 7 }, () => 1n),
+						),
 				).to.be.reverted;
 			});
 		});
@@ -509,11 +579,11 @@ describe("EncryptedERC - Converter", () => {
 
 					await encryptedERC
 						.connect(owner)
-						.deposit(testCase.convertedAmount, erc20.target, [
-							...ciphertext,
-							...authKey,
-							nonce,
-						]);
+						["deposit(uint256,address,uint256[7])"](
+							testCase.convertedAmount,
+							erc20.target,
+							[...ciphertext, ...authKey, nonce],
+						);
 
 					const erc20BalanceAfter = await erc20.balanceOf(owner.address);
 					expect(erc20BalanceAfter).to.equal(
@@ -551,11 +621,13 @@ describe("EncryptedERC - Converter", () => {
 				const user = users[1];
 
 				await expect(
-					encryptedERC.connect(user.signer).deposit(
-						1n,
-						erc20s[0].target,
-						Array.from({ length: 7 }, () => 1n),
-					),
+					encryptedERC
+						.connect(user.signer)
+						["deposit(uint256,address,uint256[7])"](
+							1n,
+							erc20s[0].target,
+							Array.from({ length: 7 }, () => 1n),
+						),
 				).to.be.reverted;
 			});
 		});
@@ -639,11 +711,11 @@ describe("EncryptedERC - Converter", () => {
 
 					await encryptedERC
 						.connect(owner)
-						.deposit(testCase.convertedAmount, erc20.target, [
-							...ciphertext,
-							...authKey,
-							nonce,
-						]);
+						["deposit(uint256,address,uint256[7])"](
+							testCase.convertedAmount,
+							erc20.target,
+							[...ciphertext, ...authKey, nonce],
+						);
 
 					const erc20BalanceAfter = await erc20.balanceOf(owner.address);
 					expect(erc20BalanceAfter).to.equal(
@@ -705,11 +777,13 @@ describe("EncryptedERC - Converter", () => {
 				const user = users[0];
 
 				await expect(
-					encryptedERC.connect(user.signer).deposit(
-						1n,
-						blacklistedERC20.target,
-						Array.from({ length: 7 }, () => 1n),
-					),
+					encryptedERC
+						.connect(user.signer)
+						["deposit(uint256,address,uint256[7])"](
+							1n,
+							blacklistedERC20.target,
+							Array.from({ length: 7 }, () => 1n),
+						),
 				).to.be.reverted;
 			});
 		});
@@ -741,7 +815,8 @@ describe("EncryptedERC - Converter", () => {
 				userInitialBalance = totalBalance;
 			});
 
-			it("should withdraw token properly", async () => {
+			it("should withdraw token properly with metadata", async () => {
+				const MESSAGE = "WITHDRAW transaction metadata testing.";
 				const user = users[0];
 				const balance = await encryptedERC.balanceOf(
 					user.signer.address,
@@ -757,11 +832,32 @@ describe("EncryptedERC - Converter", () => {
 					auditorPublicKey,
 				);
 
-				expect(
-					await encryptedERC
-						.connect(user.signer)
-						.withdraw(tokenId, proof, userBalancePCT),
-				).to.be.not.reverted;
+				const encryptedMetadata = encryptMetadata(user.publicKey, MESSAGE);
+
+				const tx = await encryptedERC
+					.connect(user.signer)
+					[
+						"withdraw(uint256,((uint256[2],uint256[2][2],uint256[2]),uint256[16]),uint256[7],bytes)"
+					](tokenId, proof, userBalancePCT, encryptedMetadata);
+				const receipt = await tx.wait();
+
+				const events = await encryptedERC.queryFilter(
+					encryptedERC.filters.PrivateMessage,
+					receipt?.blockNumber || 0,
+					receipt?.blockNumber || 0,
+				);
+
+				const emittedMetadata = events[0].args.metadata;
+				expect(emittedMetadata).to.not.be.equal("0x");
+				const messageType = emittedMetadata.messageType;
+				expect(messageType).to.equal("WITHDRAW");
+
+				const encryptedMsgBytes = emittedMetadata.encryptedMsg;
+				const decryptedMetadata = decryptMetadata(
+					user.privateKey,
+					encryptedMsgBytes || "",
+				);
+				expect(decryptedMetadata).to.equal(MESSAGE);
 
 				validProof = { proof, userBalancePCT };
 			});
@@ -789,7 +885,9 @@ describe("EncryptedERC - Converter", () => {
 				await expect(
 					encryptedERC
 						.connect(user.signer)
-						.withdraw(tokenId, validProof.proof, validProof.userBalancePCT),
+						[
+							"withdraw(uint256,((uint256[2],uint256[2][2],uint256[2]),uint256[16]),uint256[7])"
+						](tokenId, validProof.proof, validProof.userBalancePCT),
 				).to.be.revertedWithCustomError(encryptedERC, "InvalidProof");
 			});
 
@@ -799,14 +897,18 @@ describe("EncryptedERC - Converter", () => {
 				_publicInputs[7] = "0";
 
 				await expect(
-					encryptedERC.connect(users[0].signer).withdraw(
-						tokenId,
-						{
-							...validProof.proof,
-							publicSignals: _publicInputs,
-						},
-						validProof.userBalancePCT,
-					),
+					encryptedERC
+						.connect(users[0].signer)
+						[
+							"withdraw(uint256,((uint256[2],uint256[2][2],uint256[2]),uint256[16]),uint256[7])"
+						](
+							tokenId,
+							{
+								...validProof.proof,
+								publicSignals: _publicInputs,
+							},
+							validProof.userBalancePCT,
+						),
 				).to.be.revertedWithCustomError(encryptedERC, "InvalidProof");
 			});
 		});
@@ -857,7 +959,9 @@ describe("EncryptedERC - Converter", () => {
 				expect(
 					await encryptedERC
 						.connect(user.signer)
-						.withdraw(tokenId, proof, userBalancePCT),
+						[
+							"withdraw(uint256,((uint256[2],uint256[2][2],uint256[2]),uint256[16]),uint256[7])"
+						](tokenId, proof, userBalancePCT),
 				).to.be.not.reverted;
 
 				validProof = { proof, userBalancePCT };
@@ -885,14 +989,18 @@ describe("EncryptedERC - Converter", () => {
 				_publicInputs[6] = "0";
 
 				await expect(
-					encryptedERC.connect(users[0].signer).withdraw(
-						tokenId,
-						{
-							...validProof.proof,
-							publicSignals: _publicInputs,
-						},
-						validProof.userBalancePCT,
-					),
+					encryptedERC
+						.connect(users[0].signer)
+						[
+							"withdraw(uint256,((uint256[2],uint256[2][2],uint256[2]),uint256[16]),uint256[7])"
+						](
+							tokenId,
+							{
+								...validProof.proof,
+								publicSignals: _publicInputs,
+							},
+							validProof.userBalancePCT,
+						),
 				).to.be.revertedWithCustomError(encryptedERC, "InvalidProof");
 			});
 
@@ -902,14 +1010,18 @@ describe("EncryptedERC - Converter", () => {
 				_proof[0] = "0";
 
 				await expect(
-					encryptedERC.connect(user.signer).withdraw(
-						tokenId,
-						{
-							...validProof.proof,
-							publicSignals: _proof,
-						},
-						validProof.userBalancePCT,
-					),
+					encryptedERC
+						.connect(user.signer)
+						[
+							"withdraw(uint256,((uint256[2],uint256[2][2],uint256[2]),uint256[16]),uint256[7])"
+						](
+							tokenId,
+							{
+								...validProof.proof,
+								publicSignals: _proof,
+							},
+							validProof.userBalancePCT,
+						),
 				).to.be.revertedWithCustomError(encryptedERC, "InvalidProof");
 			});
 
@@ -919,7 +1031,9 @@ describe("EncryptedERC - Converter", () => {
 				await expect(
 					encryptedERC
 						.connect(user.signer)
-						.withdraw(10n, validProof.proof, validProof.userBalancePCT),
+						[
+							"withdraw(uint256,((uint256[2],uint256[2][2],uint256[2]),uint256[16]),uint256[7])"
+						](10n, validProof.proof, validProof.userBalancePCT),
 				).to.be.revertedWithCustomError(encryptedERC, "UnknownToken");
 			});
 		});
@@ -969,7 +1083,9 @@ describe("EncryptedERC - Converter", () => {
 				expect(
 					await encryptedERC
 						.connect(user.signer)
-						.withdraw(tokenId, proof, userBalancePCT),
+						[
+							"withdraw(uint256,((uint256[2],uint256[2][2],uint256[2]),uint256[16]),uint256[7])"
+						](tokenId, proof, userBalancePCT),
 				).to.be.not.reverted;
 
 				validProof = { proof, userBalancePCT };
@@ -1031,7 +1147,9 @@ describe("EncryptedERC - Converter", () => {
 				expect(
 					await encryptedERC
 						.connect(sender.signer)
-						.transfer(receiver.signer.address, 1n, proof, senderBalancePCT),
+						[
+							"transfer(address,uint256,((uint256[2],uint256[2][2],uint256[2]),uint256[32]),uint256[7])"
+						](receiver.signer.address, 1n, proof, senderBalancePCT),
 				).to.be.not.reverted;
 
 				senderBalance = senderBalance - transferAmount;
