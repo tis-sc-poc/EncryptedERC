@@ -18,6 +18,14 @@ export const randomNonce = (): bigint => {
 	return BigInt(`0x${bytes.toString("hex")}`) + 1n;
 };
 
+export interface PoseidonEncryptionResult {
+  ciphertext: bigint[];
+  nonce: bigint;
+  encRandom: bigint;
+  poseidonEncryptionKey: Point<bigint>;
+  authKey: Point<bigint>;
+}
+
 /**
  *
  * @param inputs Input array to encrypt
@@ -31,7 +39,7 @@ export const randomNonce = (): bigint => {
 export const processPoseidonEncryption = (
 	inputs: bigint[],
 	publicKey: bigint[],
-) => {
+): PoseidonEncryptionResult => {
 	const nonce = randomNonce();
 
 	let encRandom = genRandomBabyJubValue();
