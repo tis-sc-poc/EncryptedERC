@@ -23,6 +23,7 @@
 		"solidity-coverage": "^0.8.14"
 	},
 	"scripts": {
+		"build": "tsc -p tsconfig.lib.json",
 		"test": "mocha 'src/**/*.test.js'",
 		"postinstall": "npx hardhat compile & npx hardhat zkit make --force && npx hardhat zkit verifiers",
 		"lint:sol": "solhint '**/*.sol' --config ./.solhint.json --ignore-path ./.solhintignore --max-warnings 0 && npx prettier --check '**/*.sol' --config ./.prettierrc",
@@ -36,8 +37,5 @@
 		"type": "git"
 	},
 	"main": "dist/index.js",
-	"types": "dist/index.d.ts",
-	"scripts": {
-		"build": "tsc -p tsconfig.lib.json"
-	}
+	"types": "dist/index.d.ts"
 }
